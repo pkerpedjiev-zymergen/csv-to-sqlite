@@ -15,9 +15,12 @@ def write_out(msg):
 
 
 class CsvOptions:
-    def __init__(self, determine_column_types=True, drop_tables=False):
+    def __init__(self, determine_column_types=True, drop_tables=False, 
+        delimiter=' ', columns=None):
         self.determine_column_types = determine_column_types
         self.drop_tables = drop_tables
+        self.delimiter = delimiter
+        self.columns = columns
 
 
 class CsvFileInfo:
@@ -48,15 +51,23 @@ class CsvFileInfo:
 
     def process_file(self):
         with open(self.path, encoding="utf8") as csvfile:
-            rdr = csv.reader(csvfile)
-            self.columnNames = [name for name in next(rdr)]
+            rdr = csv.reader(csvfile, delimiter=self.options.delimiter)
+            if self.options.columns is None:
+                self.columnNames = [name for name in next(rdr)]
+            else:
+                self.columnNames = self.options.columns
             cols = len(self.columnNames)
             self.columnTypes = ["string"] * cols if not self.options.determine_column_types  else ["integer"] * cols
             for row in rdr:
-                self.data.append(row)
+                self.data.append(row + [None] * (len(self.columnTypes) - len(row)))
                 for col in range(cols):
                     if self.columnTypes[col] == "text":
                         continue
+
+                    if col >= len(row):
+                        # this row has less columns than expected so just ignore it
+                        continue
+
                     col_type = self.get_minimal_type(row[col])
                     if self.columnTypes[col] != col_type:
                         if col_type == "text" or \
@@ -91,6 +102,8 @@ class CsvFileInfo:
 @click.option("--output", "-o", help="The output database path",
               type=click.Path(),
               default=os.path.basename(os.getcwd()) + ".db")
+@click.option("--delimiter", "-d", help="Delimiter",
+               default=' ')
 @click.option("--find-types/--no-types",
               help="Determines whether the script should guess the column type (int/float/string supported)",
               default=True)
@@ -102,7 +115,11 @@ class CsvFileInfo:
               is_flag=True,
               help="Determines whether progress reporting messages should be printed",
               default=False)
-def start(file, output, find_types, drop_tables, verbose):
+@click.option("--columns", "-c",
+              help="The column names for this file. If not specified use the head of the file",
+              default=None,
+              multiple=True)
+def start(file, output, delimiter, find_types, drop_tables, verbose, columns):
     """A script that processes the input CSV files and copies them into a SQLite database.
     Each file is copied into a separate table. Column names are taken from the headers (first row) in the csv file.
 
@@ -113,6 +130,9 @@ def start(file, output, find_types, drop_tables, verbose):
 
         ls *.csv | % FullName | csv-to-sqlite -o out.db
     """
+    _start(file, output, find_types, drop_tables, verbose)
+
+def _start(file, output, delimiter, find_types, drop_tables, verbose, columns):
     write_out.verbose = verbose
     files = list(file)
     if not sys.stdin.isatty():
@@ -122,7 +142,8 @@ def start(file, output, find_types, drop_tables, verbose):
         return
     write_out("Output file: " + output)
     conn = sqlite3.connect(output)
-    defaults = CsvOptions(determine_column_types=find_types, drop_tables=drop_tables)
+    defaults = CsvOptions(determine_column_types=find_types, 
+        drop_tables=drop_tables, delimiter=delimiter, columns=columns)
     totalRowsInserted = 0
     startTime = time.clock()
     with click.progressbar(files) as _files:
@@ -133,6 +154,7 @@ def start(file, output, find_types, drop_tables, verbose):
                 write_out("Processing " + file)
                 info = CsvFileInfo(file, defaults)
                 info.process_file()
+                print("done")
                 totalRowsInserted += info.save_to_db(conn)
             except Exception as exc:
                 print("Error on table {0}: \n {1}".format(info.get_table_name(), exc))
